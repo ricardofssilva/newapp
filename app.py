@@ -19,7 +19,6 @@ IMAGE_DIR.mkdir(exist_ok=True)
 # -------------------------
 # Authentication setup
 # -------------------------
-# New-style credentials dict (plain passwords; library will hash them automatically)
 CREDENTIALS = {
     "usernames": {
         "alice": {
@@ -239,11 +238,10 @@ def page_invest(current_name: str, current_username: str):
 
     st.markdown("### Available projects")
 
-    # Remember selected project between reruns
     if "selected_project_id" not in st.session_state and projects:
         st.session_state["selected_project_id"] = projects[0]["id"]
 
-    # 3-column grid of project cards
+    # 3-column grid
     for i in range(0, len(projects), 3):
         cols = st.columns(3)
         for col, p in zip(cols, projects[i : i + 3]):
@@ -456,12 +454,8 @@ def main():
     )
     init_db()
 
-    # Top bar: title + login
-    col1, col2 = st.columns([3, 1])
-    with col1:
-        st.title("Mini Crowdfunding Platform")
-    with col2:
-        name, authentication_status, username = authenticator.login("Login", "main")
+    # LOGIN MUST BE AT TOP LEVEL (location='main' is ok here)
+    name, authentication_status, username = authenticator.login("Login", "main")
 
     if authentication_status is False:
         st.error("Username/password incorrect")
@@ -471,22 +465,26 @@ def main():
         st.warning("Please enter your username and password.")
         return
 
-    if authentication_status:
-        authenticator.logout("Logout", "main")
-        st.caption(f"Logged in as **{name}** ({username})")
+    # Authenticated:
+    st.title("Mini Crowdfunding Platform")
 
-        tab_submit, tab_invest, tab_my_page, tab_overview = st.tabs(
-            ["Submit a project", "Invest in projects", "My Page", "Projects overview"]
-        )
+    # Logout + user info in sidebar
+    authenticator.logout("Logout", "sidebar")
+    st.sidebar.caption(f"Logged in as **{name}** ({username})")
 
-        with tab_submit:
-            page_submit_project()
-        with tab_invest:
-            page_invest(name, username)
-        with tab_my_page:
-            page_personal_page(name, username)
-        with tab_overview:
-            page_overview()
+    # Top navigation with tabs (no sidebar menu)
+    tab_submit, tab_invest, tab_my_page, tab_overview = st.tabs(
+        ["Submit a project", "Invest in projects", "My Page", "Projects overview"]
+    )
+
+    with tab_submit:
+        page_submit_project()
+    with tab_invest:
+        page_invest(name, username)
+    with tab_my_page:
+        page_personal_page(name, username)
+    with tab_overview:
+        page_overview()
 
 
 if __name__ == "__main__":
