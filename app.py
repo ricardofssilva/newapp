@@ -3,10 +3,11 @@ import uuid
 import sqlite3
 from pathlib import Path
 from datetime import datetime
+import hashlib
+import hmac
 
 import pandas as pd
 import streamlit as st
-import streamlit_authenticator as stauth
 
 # -------------------------
 # Config
@@ -15,29 +16,81 @@ DB_PATH = "crowdfunding.db"
 IMAGE_DIR = Path("project_images")
 IMAGE_DIR.mkdir(exist_ok=True)
 
+# -------------------------
+# Simple user database (demo)
+# -------------------------
+# For a real app, move these to a secure DB or environment variables.
+def _hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
-# -------------------------
-# Authentication setup
-# -------------------------
-CREDENTIALS = {
-    "usernames": {
-        "alice": {
-            "name": "Alice Investor",
-            "password": "alice123",  # change in real life
-        },
-        "bob": {
-            "name": "Bob ProjectOwner",
-            "password": "bob123",  # change in real life
-        },
-    }
+
+USERS = {
+    "alice": {
+        "name": "Alice Investor",
+        "password_hash": _hash_password("alice123"),  # change in real app
+    },
+    "bob": {
+        "name": "Bob ProjectOwner",
+        "password_hash": _hash_password("bob123"),  # change in real app
+    },
 }
 
-authenticator = stauth.Authenticate(
-    CREDENTIALS,
-    "crowdfunding_cookie",          # cookie name
-    "crowdfunding_signature_key",   # cookie key (use a long random string in prod)
-    1.0                             # cookie expiry days
-)
+
+# -------------------------
+# Authentication helpers
+# -------------------------
+def login():
+    """Simple login form that sets session_state when user logs in."""
+    if "auth" not in st.session_state:
+        st.session_state.auth = {
+            "logged_in": False,
+            "username": None,
+            "name": None,
+        }
+
+    auth = st.session_state.auth
+
+    # If already logged in, just return
+    if auth["logged_in"]:
+        return auth["name"], True, auth["username"]
+
+    st.title("Mini Crowdfunding Platform")
+    st.subheader("🔐 Please log in to continue")
+
+    with st.form("login_form"):
+        username = st.text_input("Username")
+        password = st.text_input("Password", type="password")
+        submitted = st.form_submit_button("Login")
+
+    if submitted:
+        if username in USERS:
+            expected_hash = USERS[username]["password_hash"]
+            pwd_hash = _hash_password(password)
+            # constant-time comparison
+            if hmac.compare_digest(expected_hash, pwd_hash):
+                st.session_state.auth = {
+                    "logged_in": True,
+                    "username": username,
+                    "name": USERS[username]["name"],
+                }
+                st.success("Login successful. Loading your app...")
+                st.experimental_rerun()
+            else:
+                st.error("Incorrect username or password.")
+        else:
+            st.error("Incorrect username or password.")
+
+    return None, None, None
+
+
+def logout():
+    if "auth" in st.session_state:
+        st.session_state.auth = {
+            "logged_in": False,
+            "username": None,
+            "name": None,
+        }
+    st.experimental_rerun()
 
 
 # -------------------------
@@ -454,25 +507,18 @@ def main():
     )
     init_db()
 
-    # LOGIN MUST BE AT TOP LEVEL (location='main' is ok here)
-    name, authentication_status, username = authenticator.login("Login", "main")
-
-    if authentication_status is False:
-        st.error("Username/password incorrect")
+    # ---- LOGIN ----
+    name, authenticated, username = login()
+    if not authenticated:
+        # login() already rendered the login form
         return
 
-    if authentication_status is None:
-        st.warning("Please enter your username and password.")
-        return
-
-    # Authenticated:
-    st.title("Mini Crowdfunding Platform")
-
-    # Logout + user info in sidebar
-    authenticator.logout("Logout", "sidebar")
+    # ---- After login ----
+    st.sidebar.button("Logout", on_click=logout)
     st.sidebar.caption(f"Logged in as **{name}** ({username})")
 
-    # Top navigation with tabs (no sidebar menu)
+    st.title("Mini Crowdfunding Platform")
+
     tab_submit, tab_invest, tab_my_page, tab_overview = st.tabs(
         ["Submit a project", "Invest in projects", "My Page", "Projects overview"]
     )
