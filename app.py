@@ -12,14 +12,13 @@ import streamlit as st
 # -------------------------
 # Config
 # -------------------------
-DB_PATH = "crowdfunding_v2.db"
+DB_PATH = "crowdfunding_v2.db"   # new DB file so schema is clean
 IMAGE_DIR = Path("project_images")
 IMAGE_DIR.mkdir(exist_ok=True)
 
 # -------------------------
 # Simple user database (demo)
 # -------------------------
-# For a real app, move these to a secure DB or environment variables.
 def _hash_password(password: str) -> str:
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
 
@@ -31,7 +30,7 @@ USERS = {
     },
     "bob": {
         "name": "Bob ProjectOwner",
-        "password_hash": _hash_password("bob123"),  # change in real app
+        "password_hash": _hash_password("bob123"),    # change in real app
     },
 }
 
@@ -66,7 +65,6 @@ def login():
         if username in USERS:
             expected_hash = USERS[username]["password_hash"]
             pwd_hash = _hash_password(password)
-            # constant-time comparison
             if hmac.compare_digest(expected_hash, pwd_hash):
                 st.session_state.auth = {
                     "logged_in": True,
@@ -297,7 +295,7 @@ def page_invest(current_name: str, current_username: str):
     # 3-column grid
     for i in range(0, len(projects), 3):
         cols = st.columns(3)
-        for col, p in zip(cols, projects[i : i + 3]):
+        for col, p in zip(cols, projects[i: i + 3]):
             with col:
                 remaining = max(p["value_needed"] - p["total_raised"], 0)
                 with st.container(border=True):
@@ -435,19 +433,18 @@ def page_personal_page(current_name: str, current_username: str):
         st.info("You haven't invested in any projects yet.")
         return
 
-df = pd.DataFrame(investments)
+    df = pd.DataFrame(investments)
 
-# Defensive: if for some reason "created_at" is missing, create a fake timeline
-if "created_at" in df.columns:
-    df["created_at"] = pd.to_datetime(df["created_at"])
-else:
-    # Use the row order as a simple time axis
-    df["created_at"] = pd.to_datetime(df.index, unit="D", origin="unix")
+    # Defensive: ensure created_at exists
+    if "created_at" in df.columns:
+        df["created_at"] = pd.to_datetime(df["created_at"])
+    else:
+        df["created_at"] = pd.to_datetime(df.index, unit="D", origin="unix")
 
-df["expected_gain"] = df["amount"] * df["project_interest_rate"] / 100.0
-df = df.sort_values("created_at")
-df["cum_invested"] = df["amount"].cumsum()
-df["cum_expected_gain"] = df["expected_gain"].cumsum()
+    df["expected_gain"] = df["amount"] * df["project_interest_rate"] / 100.0
+    df = df.sort_values("created_at")
+    df["cum_invested"] = df["amount"].cumsum()
+    df["cum_expected_gain"] = df["expected_gain"].cumsum()
 
     st.markdown("### Investment history")
     st.line_chart(
@@ -517,8 +514,7 @@ def main():
     # ---- LOGIN ----
     name, authenticated, username = login()
     if not authenticated:
-        # login() already rendered the login form
-        return
+        return  # login() already rendered the form
 
     # ---- After login ----
     st.sidebar.button("Logout", on_click=logout)
