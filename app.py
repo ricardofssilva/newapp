@@ -1,9 +1,13 @@
-import streamlit as st
+import os
+import uuid
+import math
 import sqlite3
 from pathlib import Path
 from datetime import datetime
-import uuid
-import os
+
+import pandas as pd
+import streamlit as st
+import streamlit_authenticator as stauth
 
 # -------------------------
 # Config
@@ -11,6 +15,31 @@ import os
 DB_PATH = "crowdfunding.db"
 IMAGE_DIR = Path("project_images")
 IMAGE_DIR.mkdir(exist_ok=True)
+
+
+# -------------------------
+# Authentication setup
+# -------------------------
+# In a real app, move usernames/passwords to a secure store
+# and use pre-generated hashed passwords instead of plain text.
+NAMES = ["Alice Investor", "Bob ProjectOwner"]
+USERNAMES = ["alice", "bob"]
+PASSWORDS = ["alice123", "bob123"]  # <-- change these
+
+# Hash passwords at runtime (simple demo).
+# For production, generate once with:
+# stauth.Hasher(["your_password"]).generate()
+# and store only the hashes.
+HASHED_PASSWORDS = stauth.Hasher(PASSWORDS).generate()
+
+authenticator = stauth.Authenticate(
+    NAMES,
+    USERNAMES,
+    HASHED_PASSWORDS,
+    "crowdfunding_cookie",
+    "crowdfunding_signature_key",  # change this to a strong random string
+    cookie_expiry_days=1,
+)
 
 
 # -------------------------
@@ -42,12 +71,14 @@ def init_db():
         """
     )
 
+    # investments include investor_username to link to logged-in user
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS investments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             project_id INTEGER NOT NULL,
             investor_name TEXT,
+            investor_username TEXT,
             amount REAL NOT NULL,
             created_at TEXT NOT NULL,
             FOREIGN KEY (project_id) REFERENCES projects(id)
@@ -83,27 +114,25 @@ def list_projects():
     return cur.fetchall()
 
 
-def get_project(project_id):
+def get_project(project_id: int):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
     return cur.fetchone()
 
 
-def add_investment(project_id, amount, investor_name=None):
+def add_investment(project_id, amount, investor_name=None, investor_username=None):
     conn = get_connection()
     cur = conn.cursor()
 
-    # Insert investment
     cur.execute(
         """
-        INSERT INTO investments (project_id, investor_name, amount, created_at)
-        VALUES (?, ?, ?, ?)
+        INSERT INTO investments (project_id, investor_name, investor_username, amount, created_at)
+        VALUES (?, ?, ?, ?, ?)
         """,
-        (project_id, investor_name, amount, datetime.utcnow().isoformat()),
+        (project_id, investor_name, investor_username, amount, datetime.utcnow().isoformat()),
     )
 
-    # Update project's total_raised
     cur.execute(
         """
         UPDATE projects
@@ -130,11 +159,36 @@ def list_investments_for_project(project_id):
     return cur.fetchall()
 
 
+def list_investments_for_user(investor_name: str, investor_username: str):
+    """
+    Returns investments made by this user, joined with project info.
+    """
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        """
+        SELECT
+            i.*,
+            p.name AS project_name,
+            p.interest_rate AS project_interest_rate,
+            p.value_needed AS project_value_needed,
+            p.total_raised AS project_total_raised
+        FROM investments i
+        JOIN projects p ON i.project_id = p.id
+        WHERE i.investor_username = ?
+           OR (i.investor_username IS NULL AND i.investor_name = ?)
+        ORDER BY i.created_at
+        """,
+        (investor_username, investor_name),
+    )
+    return cur.fetchall()
+
+
 # -------------------------
 # UI: Project creation
 # -------------------------
 def page_submit_project():
-    st.header("📌 Submit a new project")
+    st.subheader("📌 Submit a new project")
 
     with st.form("project_form"):
         name = st.text_input("Project name")
@@ -161,12 +215,11 @@ def page_submit_project():
 
     if submitted:
         if not name or not description or value_needed <= 0:
-            st.error("Please fill in the name, description and a positive value needed.")
+            st.error("Please fill in the name, description and a positive amount needed.")
             return
 
         image_path = None
         if uploaded_image is not None:
-            # Save uploaded image to disk
             extension = os.path.splitext(uploaded_image.name)[1]
             filename = f"{uuid.uuid4().hex}{extension}"
             filepath = IMAGE_DIR / filename
@@ -181,31 +234,53 @@ def page_submit_project():
 # -------------------------
 # UI: Invest in projects
 # -------------------------
-def page_invest():
-    st.header("💰 Invest in projects")
+def page_invest(current_name: str, current_username: str):
+    st.subheader("💰 Invest in projects")
 
     projects = list_projects()
     if not projects:
         st.info("There are no projects yet. Check back later or submit one yourself!")
         return
 
-    # For the selector, show name and remaining amount
-    project_options = []
-    option_to_id = {}
-    for p in projects:
-        remaining = max(p["value_needed"] - p["total_raised"], 0)
-        label = f'{p["name"]} – needed: €{p["value_needed"]:.2f}, raised: €{p["total_raised"]:.2f}, remaining: €{remaining:.2f}'
-        project_options.append(label)
-        option_to_id[label] = p["id"]
+    # --- 3-column grid of project cards ---
+    st.markdown("### Available projects")
 
-    selected_label = st.selectbox("Select a project to invest in", project_options)
-    selected_project_id = option_to_id[selected_label]
-    project = get_project(selected_project_id)
+    # initialize selected project ID in session
+    if "selected_project_id" not in st.session_state and projects:
+        st.session_state["selected_project_id"] = projects[0]["id"]
+
+    for i in range(0, len(projects), 3):
+        cols = st.columns(3)
+        for col, p in zip(cols, projects[i : i + 3]):
+            with col:
+                remaining = max(p["value_needed"] - p["total_raised"], 0)
+                with st.container(border=True):
+                    st.markdown(f"**{p['name']}**")
+                    if p["image_path"] and Path(p["image_path"]).exists():
+                        st.image(p["image_path"], use_column_width=True)
+                    st.caption(p["description"][:120] + ("..." if len(p["description"]) > 120 else ""))
+                    st.write(f"Needed: €{p['value_needed']:.2f}")
+                    st.write(f"Raised: €{p['total_raised']:.2f}")
+                    st.write(f"Remaining: €{remaining:.2f}")
+                    st.write(f"Interest: {p['interest_rate']:.2f}%")
+
+                    if p["value_needed"] > 0:
+                        progress = p["total_raised"] / p["value_needed"]
+                        progress = min(max(progress, 0), 1)
+                        st.progress(progress)
+
+                    if st.button("Select this project", key=f"select_{p['id']}"):
+                        st.session_state["selected_project_id"] = p["id"]
+
+    st.markdown("---")
+
+    selected_id = st.session_state.get("selected_project_id")
+    project = get_project(selected_id) if selected_id else None
 
     if project:
         remaining = max(project["value_needed"] - project["total_raised"], 0)
 
-        st.subheader(project["name"])
+        st.markdown(f"### Selected project: **{project['name']}**")
         cols = st.columns([2, 1])
 
         with cols[0]:
@@ -226,32 +301,33 @@ def page_invest():
             else:
                 st.caption("No image available.")
 
-        st.markdown("---")
-        st.subheader("Make an investment")
+        st.markdown("#### Make an investment")
 
-        investor_name = st.text_input("Your name (optional)")
-        max_invest = remaining if remaining > 0 else 0.0
         invest_amount = st.number_input(
             "Amount to invest (€)",
             min_value=0.0,
-            max_value=max_invest,
+            max_value=remaining if remaining > 0 else 0.0,
             step=10.0,
             format="%.2f",
             key=f"invest_amount_{project['id']}",
         )
 
-        if st.button("Invest now"):
+        if st.button("Invest now", key=f"invest_button_{project['id']}"):
             if invest_amount <= 0:
                 st.error("Please enter a positive amount.")
             elif invest_amount > remaining:
-                st.error("Amount exceeds remaining needed for this project.")
+                st.error("Amount exceeds the remaining amount needed for this project.")
             else:
-                add_investment(project["id"], invest_amount, investor_name or None)
+                add_investment(
+                    project["id"],
+                    invest_amount,
+                    investor_name=current_name,
+                    investor_username=current_username,
+                )
                 st.success("Thank you for your investment! 🎉")
-                st.experimental_rerun()  # refresh page to show updated totals
+                st.experimental_rerun()
 
-        # Show recent investments
-        st.markdown("### Recent investments for this project")
+        st.markdown("#### Recent investments for this project")
         investments = list_investments_for_project(project["id"])
         if investments:
             for inv in investments:
@@ -267,7 +343,7 @@ def page_invest():
 # UI: Overview page
 # -------------------------
 def page_overview():
-    st.header("📊 Project overview")
+    st.subheader("📊 Project overview")
 
     projects = list_projects()
     if not projects:
@@ -299,28 +375,133 @@ def page_overview():
 
 
 # -------------------------
+# UI: Personal page
+# -------------------------
+def page_personal_page(current_name: str, current_username: str):
+    st.subheader("👤 My Page")
+
+    investments = list_investments_for_user(current_name, current_username)
+
+    if not investments:
+        st.info("You haven't invested in any projects yet.")
+        return
+
+    # Convert to DataFrame for easier manipulation
+    df = pd.DataFrame(investments)
+
+    # Parse dates
+    df["created_at"] = pd.to_datetime(df["created_at"])
+
+    # Expected gain per investment = amount * interest_rate / 100 (simple)
+    df["expected_gain"] = df["amount"] * df["project_interest_rate"] / 100.0
+
+    # Sort by time and compute cumulative sums
+    df = df.sort_values("created_at")
+    df["cum_invested"] = df["amount"].cumsum()
+    df["cum_expected_gain"] = df["expected_gain"].cumsum()
+
+    st.markdown("### Investment history")
+
+    st.line_chart(
+        df.set_index("created_at")[["cum_invested", "cum_expected_gain"]],
+        height=350,
+    )
+
+    st.markdown("### Investment summary by project")
+
+    summary = (
+        df.groupby("project_name")
+        .agg(
+            total_invested=("amount", "sum"),
+            avg_interest=("project_interest_rate", "mean"),
+            expected_gain=("expected_gain", "sum"),
+            num_investments=("id", "count"),
+        )
+        .reset_index()
+    )
+
+    st.dataframe(
+        summary.style.format(
+            {
+                "total_invested": "€{:.2f}",
+                "avg_interest": "{:.2f}%",
+                "expected_gain": "€{:.2f}",
+            }
+        ),
+        use_container_width=True,
+    )
+
+    st.markdown("### Raw transaction list")
+    st.dataframe(
+        df[
+            [
+                "created_at",
+                "project_name",
+                "amount",
+                "project_interest_rate",
+                "expected_gain",
+            ]
+        ]
+        .rename(
+            columns={
+                "created_at": "Date",
+                "project_name": "Project",
+                "amount": "Amount (€)",
+                "project_interest_rate": "Interest (%)",
+                "expected_gain": "Expected gain (€)",
+            }
+        )
+        .sort_values("Date", ascending=False),
+        use_container_width=True,
+    )
+
+
+# -------------------------
 # Main app
 # -------------------------
 def main():
-    st.set_page_config(page_title="Mini Crowdfunding Platform", page_icon="💶", layout="wide")
+    st.set_page_config(
+        page_title="Mini Crowdfunding Platform",
+        page_icon="💶",
+        layout="wide",
+    )
     init_db()
 
-    st.sidebar.title("Mini Crowdfunding")
-    page = st.sidebar.radio(
-        "I want to…",
-        (
-            "Submit a project",
-            "Invest in projects",
-            "View projects overview",
-        ),
-    )
+    # --- Top bar with login/logout ---
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        st.title("Mini Crowdfunding Platform")
+    with col2:
+        name, authentication_status, username = authenticator.login("Login", "main")
 
-    if page == "Submit a project":
-        page_submit_project()
-    elif page == "Invest in projects":
-        page_invest()
-    else:
-        page_overview()
+    if authentication_status is False:
+        st.error("Username/password incorrect")
+
+    if authentication_status is None:
+        st.warning("Please enter your username and password.")
+        return
+
+    if authentication_status:
+        # Show logout button in the top bar
+        authenticator.logout("Logout", "main")
+        st.caption(f"Logged in as **{name}** ({username})")
+
+        # --- Top navigation (tabs instead of sidebar) ---
+        tab_submit, tab_invest, tab_my_page, tab_overview = st.tabs(
+            ["Submit a project", "Invest in projects", "My Page", "Projects overview"]
+        )
+
+        with tab_submit:
+            page_submit_project()
+
+        with tab_invest:
+            page_invest(name, username)
+
+        with tab_my_page:
+            page_personal_page(name, username)
+
+        with tab_overview:
+            page_overview()
 
 
 if __name__ == "__main__":
