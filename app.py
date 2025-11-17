@@ -1,6 +1,5 @@
 import os
 import uuid
-import math
 import sqlite3
 from pathlib import Path
 from datetime import datetime
@@ -20,25 +19,25 @@ IMAGE_DIR.mkdir(exist_ok=True)
 # -------------------------
 # Authentication setup
 # -------------------------
-# In a real app, move usernames/passwords to a secure store
-# and use pre-generated hashed passwords instead of plain text.
-NAMES = ["Alice Investor", "Bob ProjectOwner"]
-USERNAMES = ["alice", "bob"]
-PASSWORDS = ["alice123", "bob123"]  # <-- change these
-
-# Hash passwords at runtime (simple demo).
-# For production, generate once with:
-# stauth.Hasher(["your_password"]).generate()
-# and store only the hashes.
-HASHED_PASSWORDS = stauth.Hasher(PASSWORDS).generate()
+# New-style credentials dict (plain passwords; library will hash them automatically)
+CREDENTIALS = {
+    "usernames": {
+        "alice": {
+            "name": "Alice Investor",
+            "password": "alice123",  # change in real life
+        },
+        "bob": {
+            "name": "Bob ProjectOwner",
+            "password": "bob123",  # change in real life
+        },
+    }
+}
 
 authenticator = stauth.Authenticate(
-    NAMES,
-    USERNAMES,
-    HASHED_PASSWORDS,
-    "crowdfunding_cookie",
-    "crowdfunding_signature_key",  # change this to a strong random string
-    cookie_expiry_days=1,
+    CREDENTIALS,
+    "crowdfunding_cookie",          # cookie name
+    "crowdfunding_signature_key",   # cookie key (use a long random string in prod)
+    1.0                             # cookie expiry days
 )
 
 
@@ -71,7 +70,6 @@ def init_db():
         """
     )
 
-    # investments include investor_username to link to logged-in user
     cur.execute(
         """
         CREATE TABLE IF NOT EXISTS investments (
@@ -160,9 +158,6 @@ def list_investments_for_project(project_id):
 
 
 def list_investments_for_user(investor_name: str, investor_username: str):
-    """
-    Returns investments made by this user, joined with project info.
-    """
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -242,13 +237,13 @@ def page_invest(current_name: str, current_username: str):
         st.info("There are no projects yet. Check back later or submit one yourself!")
         return
 
-    # --- 3-column grid of project cards ---
     st.markdown("### Available projects")
 
-    # initialize selected project ID in session
+    # Remember selected project between reruns
     if "selected_project_id" not in st.session_state and projects:
         st.session_state["selected_project_id"] = projects[0]["id"]
 
+    # 3-column grid of project cards
     for i in range(0, len(projects), 3):
         cols = st.columns(3)
         for col, p in zip(cols, projects[i : i + 3]):
@@ -258,7 +253,10 @@ def page_invest(current_name: str, current_username: str):
                     st.markdown(f"**{p['name']}**")
                     if p["image_path"] and Path(p["image_path"]).exists():
                         st.image(p["image_path"], use_column_width=True)
-                    st.caption(p["description"][:120] + ("..." if len(p["description"]) > 120 else ""))
+                    st.caption(
+                        p["description"][:120]
+                        + ("..." if len(p["description"]) > 120 else "")
+                    )
                     st.write(f"Needed: €{p['value_needed']:.2f}")
                     st.write(f"Raised: €{p['total_raised']:.2f}")
                     st.write(f"Remaining: €{remaining:.2f}")
@@ -386,29 +384,20 @@ def page_personal_page(current_name: str, current_username: str):
         st.info("You haven't invested in any projects yet.")
         return
 
-    # Convert to DataFrame for easier manipulation
     df = pd.DataFrame(investments)
-
-    # Parse dates
     df["created_at"] = pd.to_datetime(df["created_at"])
-
-    # Expected gain per investment = amount * interest_rate / 100 (simple)
     df["expected_gain"] = df["amount"] * df["project_interest_rate"] / 100.0
-
-    # Sort by time and compute cumulative sums
     df = df.sort_values("created_at")
     df["cum_invested"] = df["amount"].cumsum()
     df["cum_expected_gain"] = df["expected_gain"].cumsum()
 
     st.markdown("### Investment history")
-
     st.line_chart(
         df.set_index("created_at")[["cum_invested", "cum_expected_gain"]],
         height=350,
     )
 
     st.markdown("### Investment summary by project")
-
     summary = (
         df.groupby("project_name")
         .agg(
@@ -467,7 +456,7 @@ def main():
     )
     init_db()
 
-    # --- Top bar with login/logout ---
+    # Top bar: title + login
     col1, col2 = st.columns([3, 1])
     with col1:
         st.title("Mini Crowdfunding Platform")
@@ -476,30 +465,26 @@ def main():
 
     if authentication_status is False:
         st.error("Username/password incorrect")
+        return
 
     if authentication_status is None:
         st.warning("Please enter your username and password.")
         return
 
     if authentication_status:
-        # Show logout button in the top bar
         authenticator.logout("Logout", "main")
         st.caption(f"Logged in as **{name}** ({username})")
 
-        # --- Top navigation (tabs instead of sidebar) ---
         tab_submit, tab_invest, tab_my_page, tab_overview = st.tabs(
             ["Submit a project", "Invest in projects", "My Page", "Projects overview"]
         )
 
         with tab_submit:
             page_submit_project()
-
         with tab_invest:
             page_invest(name, username)
-
         with tab_my_page:
             page_personal_page(name, username)
-
         with tab_overview:
             page_overview()
 
