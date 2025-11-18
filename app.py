@@ -12,83 +12,17 @@ import streamlit as st
 # -------------------------
 # Config
 # -------------------------
-DB_PATH = "crowdfunding_v2.db"   # new DB file so schema is clean
+DB_PATH = "crowdfunding_v2.db"   # DB file
 IMAGE_DIR = Path("project_images")
 IMAGE_DIR.mkdir(exist_ok=True)
 
+
 # -------------------------
-# Simple user database (demo)
+# Password hashing helpers
 # -------------------------
 def _hash_password(password: str) -> str:
+    """Return a SHA-256 hash of the password."""
     return hashlib.sha256(password.encode("utf-8")).hexdigest()
-
-
-USERS = {
-    "alice": {
-        "name": "Alice Investor",
-        "password_hash": _hash_password("alice123"),  # change in real app
-    },
-    "bob": {
-        "name": "Bob ProjectOwner",
-        "password_hash": _hash_password("bob123"),    # change in real app
-    },
-}
-
-
-# -------------------------
-# Authentication helpers
-# -------------------------
-def login():
-    """Simple login form that sets session_state when user logs in."""
-    if "auth" not in st.session_state:
-        st.session_state.auth = {
-            "logged_in": False,
-            "username": None,
-            "name": None,
-        }
-
-    auth = st.session_state.auth
-
-    # If already logged in, just return
-    if auth["logged_in"]:
-        return auth["name"], True, auth["username"]
-
-    st.title("Mini Crowdfunding Platform")
-    st.subheader("🔐 Please log in to continue")
-
-    with st.form("login_form"):
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-        submitted = st.form_submit_button("Login")
-
-    if submitted:
-        if username in USERS:
-            expected_hash = USERS[username]["password_hash"]
-            pwd_hash = _hash_password(password)
-            if hmac.compare_digest(expected_hash, pwd_hash):
-                st.session_state.auth = {
-                    "logged_in": True,
-                    "username": username,
-                    "name": USERS[username]["name"],
-                }
-                st.success("Login successful. Loading your app...")
-                st.experimental_rerun()
-            else:
-                st.error("Incorrect username or password.")
-        else:
-            st.error("Incorrect username or password.")
-
-    return None, None, None
-
-
-def logout():
-    if "auth" in st.session_state:
-        st.session_state.auth = {
-            "logged_in": False,
-            "username": None,
-            "name": None,
-        }
-    st.experimental_rerun()
 
 
 # -------------------------
@@ -104,6 +38,19 @@ def get_connection():
 def init_db():
     conn = get_connection()
     cur = conn.cursor()
+
+    # Users table for registration / login
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            display_name TEXT,
+            password_hash TEXT NOT NULL,
+            created_at TEXT NOT NULL
+        )
+        """
+    )
 
     cur.execute(
         """
@@ -134,6 +81,27 @@ def init_db():
         """
     )
 
+    conn.commit()
+
+
+def get_user_by_email(email: str):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM users WHERE email = ?", (email,))
+    return cur.fetchone()
+
+
+def create_user(email: str, password_plain: str, display_name: str | None = None):
+    conn = get_connection()
+    cur = conn.cursor()
+    password_hash = _hash_password(password_plain)
+    cur.execute(
+        """
+        INSERT INTO users (email, display_name, password_hash, created_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (email, display_name, password_hash, datetime.utcnow().isoformat()),
+    )
     conn.commit()
 
 
@@ -227,6 +195,95 @@ def list_investments_for_user(investor_name: str, investor_username: str):
         (investor_username, investor_name),
     )
     return cur.fetchall()
+
+
+# -------------------------
+# Authentication helpers
+# -------------------------
+def login_or_register():
+    """
+    Show a page with Login and Register tabs.
+    Returns (display_name, authenticated_bool, email_username_str)
+    """
+    if "auth" not in st.session_state:
+        st.session_state.auth = {
+            "logged_in": False,
+            "username": None,
+            "name": None,
+        }
+
+    auth = st.session_state.auth
+
+    if auth["logged_in"]:
+        return auth["name"], True, auth["username"]
+
+    st.title("Mini Crowdfunding Platform")
+
+    tab_login, tab_register = st.tabs(["Login", "Register"])
+
+    # -------- Login tab --------
+    with tab_login:
+        st.subheader("🔐 Login")
+        with st.form("login_form"):
+            email_login = st.text_input("Email")
+            password_login = st.text_input("Password", type="password")
+            submitted_login = st.form_submit_button("Login")
+
+        if submitted_login:
+            user = get_user_by_email(email_login.strip().lower())
+            if user is None:
+                st.error("Incorrect email or password.")
+            else:
+                expected_hash = user["password_hash"]
+                pwd_hash = _hash_password(password_login)
+                if hmac.compare_digest(expected_hash, pwd_hash):
+                    display_name = user["display_name"] or user["email"]
+                    st.session_state.auth = {
+                        "logged_in": True,
+                        "username": user["email"],
+                        "name": display_name,
+                    }
+                    st.success("Login successful. Loading your app...")
+                    st.rerun()
+                else:
+                    st.error("Incorrect email or password.")
+
+    # -------- Register tab --------
+    with tab_register:
+        st.subheader("📝 Register")
+        with st.form("register_form"):
+            email_reg = st.text_input("Email (this will be your login)")
+            name_reg = st.text_input("Name (how we’ll display you)")
+            password_reg = st.text_input("Password", type="password")
+            password_confirm = st.text_input("Confirm password", type="password")
+            submitted_register = st.form_submit_button("Create account")
+
+        if submitted_register:
+            email_reg = email_reg.strip().lower()
+            if not email_reg or not password_reg:
+                st.error("Email and password are required.")
+            elif "@" not in email_reg:
+                st.error("Please enter a valid email.")
+            elif password_reg != password_confirm:
+                st.error("Passwords do not match.")
+            else:
+                try:
+                    create_user(email_reg, password_reg, name_reg.strip() or None)
+                    st.success("Account created! You can now log in with your credentials.")
+                except sqlite3.IntegrityError:
+                    st.error("This email is already registered. Try logging in instead.")
+
+    return None, False, None
+
+
+def logout():
+    if "auth" in st.session_state:
+        st.session_state.auth = {
+            "logged_in": False,
+            "username": None,
+            "name": None,
+        }
+    st.rerun()
 
 
 # -------------------------
@@ -372,7 +429,7 @@ def page_invest(current_name: str, current_username: str):
                     investor_username=current_username,
                 )
                 st.success("Thank you for your investment! 🎉")
-                st.experimental_rerun()
+                st.rerun()
 
         st.markdown("#### Recent investments for this project")
         investments = list_investments_for_project(project["id"])
@@ -435,7 +492,6 @@ def page_personal_page(current_name: str, current_username: str):
 
     df = pd.DataFrame(investments)
 
-    # Defensive: ensure created_at exists
     if "created_at" in df.columns:
         df["created_at"] = pd.to_datetime(df["created_at"])
     else:
@@ -511,10 +567,10 @@ def main():
     )
     init_db()
 
-    # ---- LOGIN ----
-    name, authenticated, username = login()
+    # ---- Login / Register ----
+    name, authenticated, username = login_or_register()
     if not authenticated:
-        return  # login() already rendered the form
+        return  # login_or_register already rendered the view
 
     # ---- After login ----
     st.sidebar.button("Logout", on_click=logout)
