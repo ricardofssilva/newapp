@@ -84,14 +84,14 @@ def init_db():
     conn.commit()
 
 
-def get_user_by_email(email: str):
+def get_user_by_email(email):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM users WHERE email = ?", (email,))
     return cur.fetchone()
 
 
-def create_user(email: str, password_plain: str, display_name: str | None = None):
+def create_user(email, password_plain, display_name=None):
     conn = get_connection()
     cur = conn.cursor()
     password_hash = _hash_password(password_plain)
@@ -130,7 +130,7 @@ def list_projects():
     return cur.fetchall()
 
 
-def get_project(project_id: int):
+def get_project(project_id):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("SELECT * FROM projects WHERE id = ?", (project_id,))
@@ -175,7 +175,7 @@ def list_investments_for_project(project_id):
     return cur.fetchall()
 
 
-def list_investments_for_user(investor_name: str, investor_username: str):
+def list_investments_for_user(investor_name, investor_username):
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -198,7 +198,7 @@ def list_investments_for_user(investor_name: str, investor_username: str):
 
 
 # -------------------------
-# Authentication helpers
+# Authentication helpers (Login + Register)
 # -------------------------
 def login_or_register():
     """
@@ -230,7 +230,8 @@ def login_or_register():
             submitted_login = st.form_submit_button("Login")
 
         if submitted_login:
-            user = get_user_by_email(email_login.strip().lower())
+            email_login = email_login.strip().lower()
+            user = get_user_by_email(email_login)
             if user is None:
                 st.error("Incorrect email or password.")
             else:
@@ -336,7 +337,7 @@ def page_submit_project():
 # -------------------------
 # UI: Invest in projects
 # -------------------------
-def page_invest(current_name: str, current_username: str):
+def page_invest(current_name, current_username):
     st.subheader("💰 Invest in projects")
 
     projects = list_projects()
@@ -481,7 +482,7 @@ def page_overview():
 # -------------------------
 # UI: Personal page
 # -------------------------
-def page_personal_page(current_name: str, current_username: str):
+def page_personal_page(current_name, current_username):
     st.subheader("👤 My Page")
 
     investments = list_investments_for_user(current_name, current_username)
@@ -492,6 +493,17 @@ def page_personal_page(current_name: str, current_username: str):
 
     df = pd.DataFrame(investments)
 
+    # Sanity checks
+    if "amount" not in df.columns:
+        st.error("Internal error: investment data has no 'amount' column.")
+        st.write("Raw data:", df)
+        return
+
+    # If project_interest_rate is missing, assume 0%
+    if "project_interest_rate" not in df.columns:
+        df["project_interest_rate"] = 0.0
+
+    # created_at handling
     if "created_at" in df.columns:
         df["created_at"] = pd.to_datetime(df["created_at"])
     else:
