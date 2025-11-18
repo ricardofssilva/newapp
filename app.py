@@ -493,11 +493,28 @@ def page_personal_page(current_name, current_username):
 
     df = pd.DataFrame(investments)
 
-    # Sanity checks
+    # If columns are numeric (0,1,2,...) map them to meaningful names
     if "amount" not in df.columns:
-        st.error("Internal error: investment data has no 'amount' column.")
-        st.write("Raw data:", df)
-        return
+        # Try to map 0..9 to expected names (matches your screenshot)
+        if len(df.columns) >= 10:
+            df = df.rename(
+                columns={
+                    0: "id",
+                    1: "project_id",
+                    2: "investor_name",
+                    3: "investor_username",
+                    4: "amount",
+                    5: "created_at",
+                    6: "project_name",
+                    7: "project_interest_rate",
+                    8: "project_value_needed",
+                    9: "project_total_raised",
+                }
+            )
+        else:
+            st.error("Internal error: investment data has unexpected format.")
+            st.write("Raw data:", df)
+            return
 
     # If project_interest_rate is missing, assume 0%
     if "project_interest_rate" not in df.columns:
